@@ -1,0 +1,447 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  onSnapshot, 
+  addDoc, 
+  deleteDoc, 
+  updateDoc,
+  query
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged,
+  signOut,
+  signInWithCustomToken,
+  signInAnonymously
+} from 'firebase/auth';
+import { 
+  Plus, 
+  Trash2, 
+  DollarSign, 
+  Package, 
+  TrendingUp, 
+  CheckCircle, 
+  Clock,
+  Search,
+  X,
+  Calendar,
+  ArrowRight,
+  LogOut,
+  ShoppingBag,
+  Receipt,
+  User
+} from 'lucide-react';
+
+// Configuração Global do Firebase
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const googleProvider = new GoogleAuthProvider();
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'natura-control-pro';
+
+const formatDate = (dateString) => {
+  if (!dateString) return '-';
+  return new Intl.DateTimeFormat('pt-BR').format(new Date(dateString));
+};
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [activeTab, setActiveTab] = useState('inventory'); 
+  const [products, setProducts] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+  const [filter, setFilter] = useState('all'); 
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  const [formData, setFormData] = useState({ name: '', purchasePrice: '', salePrice: '' });
+  const [expenseData, setExpenseData] = useState({ description: '', value: '' });
+
+  // Autenticação inicial
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Erro na autenticação inicial:", error);
+      }
+    };
+
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Erro no login com Google:", error);
+    }
+  };
+
+  const handleLogout = () => signOut(auth);
+
+  // Busca de Dados
+  useEffect(() => {
+    if (!user) return;
+
+    const productsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'products');
+    const unsubscribeProducts = onSnapshot(
+      query(productsRef), 
+      (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        data.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+        setProducts(data);
+      },
+      (error) => console.error("Erro ao carregar produtos:", error)
+    );
+
+    const expensesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'expenses');
+    const unsubscribeExpenses = onSnapshot(
+      query(expensesRef), 
+      (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        data.sort((a, b) => new Date(b.date) - new Date(a.date));
+        setExpenses(data);
+      },
+      (error) => console.error("Erro ao carregar despesas:", error)
+    );
+
+    return () => {
+      unsubscribeProducts();
+      unsubscribeExpenses();
+    };
+  }, [user]);
+
+  const stats = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    const totalInvested = products.reduce((acc, p) => acc + Number(p.purchasePrice), 0);
+    
+    const monthlySold = products.filter(p => {
+      if (p.status !== 'sold' || !p.exitDate) return false;
+      const d = new Date(p.exitDate);
+      return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+    });
+    
+    const monthlyGrossProfit = monthlySold.reduce((acc, p) => acc + (Number(p.salePrice) - Number(p.purchasePrice)), 0);
+
+    const monthlyExpenses = expenses.filter(e => {
+      const d = new Date(e.date);
+      return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+    }).reduce((acc, e) => acc + Number(e.value), 0);
+
+    return { 
+      totalInvested, 
+      monthlyNetProfit: monthlyGrossProfit - monthlyExpenses, 
+      monthlySalesCount: monthlySold.length,
+      monthlyExpenses
+    };
+  }, [products, expenses]);
+
+  const filteredProducts = products.filter(p => {
+    const matchesFilter = filter === 'all' || p.status === filter;
+    return matchesFilter && p.name.toLowerCase().includes(searchTerm.toLowerCase());
+  });
+
+  const addProduct = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+    const productsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'products');
+    await addDoc(productsRef, {
+      ...formData,
+      purchasePrice: Number(formData.purchasePrice),
+      salePrice: Number(formData.salePrice),
+      entryDate: new Date().toISOString(),
+      status: 'available',
+      exitDate: null
+    });
+    setFormData({ name: '', purchasePrice: '', salePrice: '' });
+    setIsModalOpen(false);
+  };
+
+  const addExpense = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+    const expensesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'expenses');
+    await addDoc(expensesRef, {
+      ...expenseData,
+      value: Number(expenseData.value),
+      date: new Date().toISOString()
+    });
+    setExpenseData({ description: '', value: '' });
+    setIsExpenseModalOpen(false);
+  };
+
+  const toggleStatus = async (product) => {
+    if (!user) return;
+    const isNowSold = product.status === 'available';
+    const productRef = doc(db, 'artifacts', appId, 'users', user.uid, 'products', product.id);
+    await updateDoc(productRef, { 
+      status: isNowSold ? 'sold' : 'available',
+      exitDate: isNowSold ? new Date().toISOString() : null
+    });
+  };
+
+  const deleteItem = async (type, id) => {
+    if (!user) return;
+    const itemRef = doc(db, 'artifacts', appId, 'users', user.uid, type, id);
+    await deleteDoc(itemRef);
+  };
+
+  if ((!user || user.isAnonymous) && !isLoading) {
+    return (
+      <div className="min-h-screen bg-[#FFFBF7] flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-[2.5rem] p-12 shadow-[0_20px_50px_rgba(255,140,0,0.1)] text-center border border-orange-50">
+          <div className="bg-orange-600 w-24 h-24 rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-xl shadow-orange-100 transform rotate-3">
+            <Package className="text-white w-12 h-12" />
+          </div>
+          <h1 className="text-4xl font-black text-stone-800 mb-3 tracking-tighter">Natura<span className="text-orange-600">Control</span></h1>
+          <p className="text-stone-400 font-medium mb-10 leading-relaxed">Faça a gestão do seu estoque de forma inteligente e aumente os seus lucros.</p>
+          <button onClick={handleLogin} className="w-full bg-stone-900 hover:bg-stone-800 text-white py-5 rounded-2xl flex items-center justify-center gap-4 font-bold transition-all active:scale-95 shadow-lg shadow-stone-200">
+            <img src="https://www.google.com/favicon.ico" className="w-5 h-5 brightness-200" alt="Google" />
+            Entrar com o Google
+          </button>
+          <div className="mt-8 pt-8 border-t border-stone-50">
+            <p className="text-[10px] text-stone-300 font-black uppercase tracking-widest">Acesso Exclusivo e Seguro</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading) return (
+    <div className="min-h-screen bg-stone-50 flex items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-orange-600"></div>
+        <p className="text-stone-400 font-bold text-xs uppercase tracking-widest">Sincronizando dados...</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#FAFAFA] text-stone-900 font-sans pb-32">
+      <header className="bg-white/80 backdrop-blur-md border-b border-stone-100 sticky top-0 z-20">
+        <div className="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="bg-orange-600 p-2 rounded-xl shadow-lg shadow-orange-100"><Package className="text-white w-5 h-5" /></div>
+            <h1 className="font-black text-xl tracking-tight">Natura<span className="text-orange-600">Control</span></h1>
+          </div>
+          
+          <div className="flex items-center gap-4">
+            <div className="hidden sm:flex items-center gap-3 bg-stone-50 px-4 py-2 rounded-2xl border border-stone-100">
+              {user?.photoURL ? (
+                <img src={user.photoURL} className="w-7 h-7 rounded-full border-2 border-white" alt="Perfil" />
+              ) : (
+                <div className="w-7 h-7 bg-stone-200 rounded-full flex items-center justify-center"><User size={14} className="text-stone-400"/></div>
+              )}
+              <span className="text-xs font-black text-stone-600 uppercase tracking-tight">
+                {user?.displayName ? user.displayName.split(' ')[0] : 'Minha Conta'}
+              </span>
+            </div>
+            <button onClick={handleLogout} className="p-2.5 text-stone-300 hover:text-red-500 transition-colors">
+              <LogOut size={22} />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-6 pt-8">
+        {/* Dashboard */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
+          <div className="bg-orange-600 rounded-[2.5rem] p-8 text-white shadow-2xl shadow-orange-200 relative overflow-hidden">
+            <div className="relative z-10">
+              <span className="text-xs font-black uppercase tracking-[0.2em] opacity-80 mb-2 block">Lucro Mensal Líquido</span>
+              <h2 className="text-5xl font-black mb-6 tracking-tighter">R$ {stats.monthlyNetProfit.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</h2>
+              <div className="flex flex-wrap gap-4 text-[10px] font-black uppercase tracking-widest">
+                <span className="bg-white/20 px-3 py-1.5 rounded-lg flex items-center gap-2 border border-white/10"><CheckCircle size={12}/> {stats.monthlySalesCount} Vendas</span>
+                <span className="bg-white/20 px-3 py-1.5 rounded-lg flex items-center gap-2 border border-white/10"><DollarSign size={12}/> Investido: R$ {stats.totalInvested.toFixed(0)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-[2.5rem] p-8 border border-stone-100 flex flex-col justify-between shadow-sm relative overflow-hidden group">
+            <div>
+              <span className="text-xs font-black uppercase tracking-[0.2em] text-stone-300 mb-2 block">Despesas Extras (Mês)</span>
+              <h2 className="text-5xl font-black text-red-500 mb-6 tracking-tighter">R$ {stats.monthlyExpenses.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</h2>
+            </div>
+            <button onClick={() => setIsExpenseModalOpen(true)} className="w-full py-4.5 bg-stone-50 hover:bg-stone-100 rounded-2xl text-stone-600 font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-3 border border-stone-100">
+              <Plus size={18} /> Registrar Despesa
+            </button>
+          </div>
+        </div>
+
+        {/* Abas e Busca */}
+        <div className="flex flex-col sm:flex-row gap-4 mb-8">
+          <div className="flex bg-white border border-stone-100 p-1.5 rounded-2xl shadow-sm flex-1">
+            <button onClick={() => setActiveTab('inventory')} className={flex-1 px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] transition-all flex items-center justify-center gap-2 ${activeTab === 'inventory' ? 'bg-orange-600 text-white shadow-lg' : 'text-stone-400 hover:bg-stone-50'}}>
+              <ShoppingBag size={14} /> Estoque
+            </button>
+            <button onClick={() => setActiveTab('expenses')} className={flex-1 px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] transition-all flex items-center justify-center gap-2 ${activeTab === 'expenses' ? 'bg-orange-600 text-white shadow-lg' : 'text-stone-400 hover:bg-stone-50'}}>
+              <Receipt size={14} /> Despesas
+            </button>
+          </div>
+          
+          {activeTab === 'inventory' && (
+            <div className="relative flex-[2]">
+              <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-stone-300" size={20} />
+              <input type="text" placeholder="Buscar produto..." className="w-full pl-14 pr-6 py-4 bg-white border border-stone-100 rounded-2xl outline-none font-medium text-sm" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+            </div>
+          )}
+        </div>
+
+        {/* Lista de Produtos com Opção de Excluir */}
+        {activeTab === 'inventory' && (
+          <div className="space-y-4">
+            <div className="flex gap-2 mb-6 overflow-x-auto pb-2 no-scrollbar">
+              {['all', 'available', 'sold'].map(f => (
+                <button key={f} onClick={() => setFilter(f)} className={px-5 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all shrink-0 ${filter === f ? 'bg-stone-900 text-white' : 'bg-white text-stone-400 border-stone-200 hover:border-stone-400'}}>
+                  {f === 'all' ? 'Ver Tudo' : f === 'available' ? 'Em Estoque' : 'Vendidos'}
+                </button>
+              ))}
+            </div>
+
+            {filteredProducts.map(product => (
+              <div key={product.id} className={bg-white border p-6 rounded-[2rem] flex flex-col md:flex-row md:items-center justify-between gap-6 transition-all hover:border-orange-200 group ${product.status === 'sold' ? 'border-green-100 opacity-80' : 'border-stone-100 shadow-sm'}}>
+                <div className="flex items-start gap-5 flex-1">
+                  <div className={w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${product.status === 'sold' ? 'bg-green-50 text-green-500' : 'bg-orange-50 text-orange-500'}}>
+                    {product.status === 'sold' ? <CheckCircle size={28} /> : <Package size={28} />}
+                  </div>
+                  <div className="space-y-1.5">
+                    <h3 className="font-black text-stone-800 text-lg tracking-tight">{product.name}</h3>
+                    <div className="flex flex-wrap gap-4 text-[10px] font-black text-stone-300 uppercase tracking-widest">
+                      <span className="flex items-center gap-1.5"><Calendar size={12}/> Entrada: {formatDate(product.entryDate)}</span>
+                      {product.exitDate && <span className="flex items-center gap-1.5 text-green-600"><ArrowRight size={12}/> Venda: {formatDate(product.exitDate)}</span>}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between md:justify-end gap-8 border-t md:border-t-0 pt-5 md:pt-0">
+                  <div className="text-right">
+                    <span className="text-[10px] font-black text-stone-300 uppercase block mb-1">Lucro</span>
+                    <span className={text-2xl font-black tracking-tighter ${product.status === 'sold' ? 'text-green-600' : 'text-stone-400'}}>
+                      R$ {(product.salePrice - product.purchasePrice).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => toggleStatus(product)} className={h-12 px-5 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all ${product.status === 'sold' ? 'bg-stone-100 text-stone-400' : 'bg-green-600 text-white shadow-xl hover:bg-green-700 active:scale-95'}}>
+                      {product.status === 'sold' ? 'Estornar' : 'Vendido'}
+                    </button>
+                    {/* Botão de Excluir Produto */}
+                    <button onClick={() => deleteItem('products', product.id)} title="Excluir Produto" className="w-12 h-12 rounded-2xl flex items-center justify-center text-stone-200 hover:text-red-500 hover:bg-red-50 transition-colors">
+                      <Trash2 size={20}/>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Lista de Despesas com Opção de Excluir */}
+        {activeTab === 'expenses' && (
+          <div className="space-y-4">
+            {expenses.length === 0 ? (
+              <div className="text-center py-24 bg-white rounded-[3rem] border-4 border-dashed border-stone-50">
+                <Receipt className="mx-auto text-stone-100 mb-6" size={80} />
+                <p className="text-stone-400 font-black text-xl tracking-tight">Nenhuma despesa registrada.</p>
+              </div>
+            ) : (
+              expenses.map(expense => (
+                <div key={expense.id} className="bg-white p-6 rounded-[2rem] border border-stone-100 flex items-center justify-between shadow-sm group hover:border-red-100 transition-all">
+                  <div className="flex items-center gap-5">
+                    <div className="w-12 h-12 bg-red-50 text-red-500 rounded-2xl flex items-center justify-center"><ArrowRight className="rotate-45" size={24}/></div>
+                    <div>
+                      <h4 className="font-black text-stone-800 text-lg tracking-tight">{expense.description}</h4>
+                      <p className="text-[10px] font-black text-stone-300 uppercase tracking-widest">{formatDate(expense.date)}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-6">
+                    <span className="text-2xl font-black text-red-500 tracking-tighter">- R$ {expense.value.toFixed(2)}</span>
+                    {/* Botão de Excluir Despesa */}
+                    <button onClick={() => deleteItem('expenses', expense.id)} title="Excluir Despesa" className="w-12 h-12 rounded-2xl flex items-center justify-center text-stone-200 hover:text-red-500 hover:bg-red-50 transition-colors">
+                      <Trash2 size={20}/>
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* Botão Flutuante */}
+      <button onClick={() => activeTab === 'inventory' ? setIsModalOpen(true) : setIsExpenseModalOpen(true)} className="fixed bottom-10 right-10 w-20 h-20 bg-orange-600 text-white rounded-[2rem] shadow-2xl flex items-center justify-center hover:scale-110 active:scale-90 transition-all z-30">
+        <Plus size={40} />
+      </button>
+
+      {/* Modais de Cadastro */}
+      {(isModalOpen || isExpenseModalOpen) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-stone-900/60 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-lg rounded-[3rem] shadow-2xl p-10 animate-in zoom-in duration-300">
+            <div className="flex justify-between items-start mb-8">
+              <div>
+                <h2 className="text-3xl font-black tracking-tighter">{isModalOpen ? 'Novo Produto' : 'Registrar Despesa'}</h2>
+                <p className="text-stone-400 text-sm font-medium">{isModalOpen ? 'Adicione ao estoque' : 'Informe o custo extra'}</p>
+              </div>
+              <button onClick={() => {setIsModalOpen(false); setIsExpenseModalOpen(false)}} className="p-3 bg-stone-50 text-stone-300 hover:text-stone-600 rounded-2xl transition-all"><X size={24}/></button>
+            </div>
+            
+            <form onSubmit={isModalOpen ? addProduct : addExpense} className="space-y-6">
+              {isModalOpen ? (
+                <>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-stone-400 ml-2">Nome do Produto</label>
+                    <input required placeholder="Ex: Perfume Kaiak" className="w-full px-6 py-5 bg-stone-50 rounded-[1.5rem] outline-none border-2 border-transparent focus:border-orange-500 focus:bg-white transition-all font-bold" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-stone-400 ml-2">Custo (R$)</label>
+                      <input required type="number" step="0.01" placeholder="0,00" className="w-full px-6 py-5 bg-stone-50 rounded-[1.5rem] outline-none border-2 border-transparent focus:border-orange-500 focus:bg-white transition-all font-black" value={formData.purchasePrice} onChange={e => setFormData({...formData, purchasePrice: e.target.value})} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-stone-400 ml-2">Venda (R$)</label>
+                      <input required type="number" step="0.01" placeholder="0,00" className="w-full px-6 py-5 bg-stone-50 rounded-[1.5rem] outline-none border-2 border-transparent focus:border-orange-500 focus:bg-white transition-all font-black" value={formData.salePrice} onChange={e => setFormData({...formData, salePrice: e.target.value})} />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-stone-400 ml-2">Descrição da Despesa</label>
+                    <input required placeholder="Ex: Frete da Caixa" className="w-full px-6 py-5 bg-stone-50 rounded-[1.5rem] outline-none border-2 border-transparent focus:border-orange-500 focus:bg-white transition-all font-bold" value={expenseData.description} onChange={e => setExpenseData({...expenseData, description: e.target.value})} />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-stone-400 ml-2">Valor (R$)</label>
+                    <input required type="number" step="0.01" placeholder="0,00" className="w-full px-6 py-5 bg-stone-50 rounded-[1.5rem] outline-none border-2 border-transparent focus:border-orange-500 focus:bg-white transition-all font-black" value={expenseData.value} onChange={e => setExpenseData({...expenseData, value: e.target.value})} />
+                  </div>
+                </>
+              )}
+              <div className="pt-4">
+                <button type="submit" className="w-full bg-orange-600 text-white font-black py-6 rounded-[1.8rem] uppercase tracking-[0.2em] shadow-xl hover:bg-orange-700 active:scale-95 transition-all text-sm">
+                  Confirmar e Salvar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
