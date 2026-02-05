@@ -38,7 +38,17 @@ import {
 } from 'lucide-react';
 
 // Configuração Global do Firebase
-const firebaseConfig = JSON.parse(__firebase_config);
+
+const firebaseConfig = 
+  apiKey: "AIzaSyBhknRdLTY60P8fMTVtFBZ713uBDDikD8U",
+  authDomain: "naturacontrol-ac4bd.firebaseapp.com",
+  projectId: "naturacontrol-ac4bd",
+  storageBucket: "naturacontrol-ac4bd.firebasestorage.app",
+  messagingSenderId: "705201010362",
+  appId: "1:705201010362:web:4d413abe2ea96e43d63483",
+  measurementId: "G-47SY76N854"
+
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
